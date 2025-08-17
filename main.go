@@ -27,6 +27,10 @@ type Config struct {
 	ListenAddr string        `yaml:"listen_addr"`
 	TEPSURL    string        `yaml:"teps_url"`
 	Interval   time.Duration `yaml:"interval"`
+	Basic      struct {
+		User string `yaml:"user"`
+		Pass string `yaml:"pass"`
+	} `yaml:"basic"`
 }
 
 // -------------- 数据结构 --------------
@@ -56,6 +60,22 @@ func loadConfig(path string) Config {
 	var c Config
 	_ = yaml.Unmarshal(b, &c)
 	return c
+}
+
+func basicAuth(user, pass string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if user == "" && pass == "" { // 未配置就跳过
+			next.ServeHTTP(w, r)
+			return
+		}
+		u, p, ok := r.BasicAuth()
+		if !ok || u != user || p != pass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="TEMS"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // -------------- 接收 Agent 数据 --------------
@@ -104,7 +124,7 @@ func pushToTEPS() {
 
 // -------------- 启动 Web --------------
 func webHandler() http.Handler {
-	return http.StripPrefix("/web/", http.FileServer(http.FS(web)))
+	return http.StripPrefix("/", http.FileServer(http.FS(web)))
 }
 
 // -------------- main --------------
@@ -113,10 +133,26 @@ func main() {
 	go pushToTEPS()
 
 	r := mux.NewRouter()
-	r.HandleFunc("/metrics", metricsHandler).Methods("POST")
-	r.HandleFunc("/api", apiHandler)
-	r.PathPrefix("/web/").Handler(webHandler())
 
+	// 1) 公开端点：Agent 推送
+	r.HandleFunc("/metrics", metricsHandler).Methods("POST")
+
+	// 根路径重定向
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/web/", http.StatusFound)
+	})
+
+	// 2) 需要 Basic Auth 的子路由
+	protected := r.PathPrefix("/").Subrouter()
+	protected.HandleFunc("/api", apiHandler)
+	protected.PathPrefix("/web/").Handler(webHandler())
+
+	// 3) 只对 protected 子路由加中间件
+	protected.Use(func(next http.Handler) http.Handler {
+		return basicAuth(cfg.Basic.User, cfg.Basic.Pass, next)
+	})
+
+	log.Printf("dashboard : http://localhost:8080")
 	log.Printf("TEMS %s ready | /metrics (Agent) | /web (Dashboard) -> TEPS %s",
 		cfg.TEMSName, cfg.TEPSURL)
 	log.Fatal(http.ListenAndServe(cfg.ListenAddr, r))
