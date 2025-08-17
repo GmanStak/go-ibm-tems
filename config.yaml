@@ -2,3 +2,6 @@ tems_name: "tems-01"      # 本机 TEMS 名称
 listen_addr: ":8080"      # 接收 Agent 上报
 teps_url: "http://localhost:8081/teps/report"  # 推送给 TEPS
 interval: 10s             # 推送周期
+basic:
+  user: admin
+  pass: secret123
